@@ -1,45 +1,24 @@
-name: Build for MT7621a (Fixed)
+#!/bin/bash
+set -e  # 关键：遇到错误立即退出
 
-on: [workflow_dispatch]
+# 1. 设置mt7621专用SDK
+SDK_NAME="openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64"
+SDK_URL="https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/"
+wget "${SDK_URL}/${SDK_NAME}.tar.xz"
+tar xf ${SDK_NAME}.tar.xz
+mv ${SDK_NAME} sdk
 
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    steps:
-    - uses: actions/checkout@v4
+# 2. 设置交叉编译环境
+export STAGING_DIR=$(pwd)/sdk/staging_dir
+TOOLCHAIN_DIR=$(find $STAGING_DIR -name "toolchain-mipsel_*" -type d)
+export PATH=$TOOLCHAIN_DIR/bin:$PATH
 
-    - name: Clean disk space
-      run: |
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+# 3. 验证工具链
+mipsel-openwrt-linux-gcc --version || {
+    echo "❌ 交叉编译工具链验证失败";
+    exit 1;
+}
 
-    - name: Setup OpenWrt SDK
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev git subversion python3 unzip
-        wget https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz
-        tar -xvf openwrt-sdk-*.tar.xz
-        mv openwrt-sdk-* sdk
-
-    - name: Prepare QModem
-      run: |
-        mkdir -p sdk/package/qmodem
-        cp -r $GITHUB_WORKSPACE/* sdk/package/qmodem/
-        rm -rf sdk/package/qmodem/.github
-        ls -l sdk/package/qmodem/  # 调试用
-
-    - name: Compile
-      run: |
-        cd sdk
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-        make defconfig
-        make package/qmodem/compile V=s 2>&1 | tee build.log  # 保存详细日志
-        grep -i error build.log && exit 1  # 如果日志中有error则主动报错
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-output
-        path: |
-          sdk/bin/packages/*/*.ipk
-          sdk/build.log
+# 4. 编译（示例）
+cd package/qmodem
+make CC=mipsel-openwrt-linux-gcc
