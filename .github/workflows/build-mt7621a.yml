@@ -1,24 +1,48 @@
-#!/bin/bash
-set -e  # 关键：遇到错误立即退出
+name: Build MT7621A IPK (OpenWrt 22.03.3)
 
-# 1. 设置mt7621专用SDK
-SDK_NAME="openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64"
-SDK_URL="https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/"
-wget "${SDK_URL}/${SDK_NAME}.tar.xz"
-tar xf ${SDK_NAME}.tar.xz
-mv ${SDK_NAME} sdk
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
 
-# 2. 设置交叉编译环境
-export STAGING_DIR=$(pwd)/sdk/staging_dir
-TOOLCHAIN_DIR=$(find $STAGING_DIR -name "toolchain-mipsel_*" -type d)
-export PATH=$TOOLCHAIN_DIR/bin:$PATH
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:  # 环境变量正确定义方式
+      SDK_URL: https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz
+      SDK_DIR: sdk
 
-# 3. 验证工具链
-mipsel-openwrt-linux-gcc --version || {
-    echo "❌ 交叉编译工具链验证失败";
-    exit 1;
-}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-# 4. 编译（示例）
-cd package/qmodem
-make CC=mipsel-openwrt-linux-gcc
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev git subversion
+
+    - name: Download and extract SDK
+      run: |
+        wget ${{ env.SDK_URL }}
+        tar -xvf openwrt-sdk-*.tar.xz
+        mv openwrt-sdk-* ${{ env.SDK_DIR }}
+
+    - name: Prepare package
+      run: |
+        mkdir -p ${{ env.SDK_DIR }}/package/qmodem
+        cp -r . ${{ env.SDK_DIR }}/package/qmodem/
+        rm -rf ${{ env.SDK_DIR }}/package/qmodem/.github
+
+    - name: Compile
+      run: |
+        cd ${{ env.SDK_DIR }}
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        make defconfig
+        make package/qmodem/compile V=s
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: firmware
+        path: ${{ env.SDK_DIR }}/bin/packages/*/*.ipk
