@@ -36,7 +36,7 @@ jobs:
         make package/qmodem/compile V=s
 
     - name: Upload IPK
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: qmodem-ipk-mt7621a
         path: ${{ env.SDK_PATH }}/bin/packages/*/base/*.ipk
