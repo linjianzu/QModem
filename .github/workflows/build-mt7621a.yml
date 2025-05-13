@@ -1,92 +1,86 @@
-name: Build QModem (Fixed Structure)
+name: Build QModem for OpenWrt
 
 on:
   workflow_dispatch:
   push:
-    branches: ["main"]
+    branches: [ main ]
+
+env:
+  SDK_URL: "https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+  MIRROR_URL: "https://mirror.0x.si/openwrt/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: "qmodem-src"  # 指定检出目录
 
-      - name: Validate repository structure
+      - name: Download OpenWrt SDK
         run: |
-          if [ ! -f "Makefile" ] && [ ! -f "src/Makefile" ]; then
-            echo "::error::No Makefile found in root or src directory"
-            echo "Please create an OpenWrt package Makefile"
-            exit 1
-          fi
-          echo "Repository structure validated"
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libncurses5-dev \
-            zlib1g-dev \
-            rsync
-
-      - name: Download and extract SDK
-        run: |
-          wget -T 60 "${{ env.SDK_URL }}" -O sdk.tar.xz
+          wget -T 60 "${{ env.SDK_URL }}" -O sdk.tar.xz || wget -T 120 "${{ env.MIRROR_URL }}" -O sdk.tar.xz
+          [ $(stat -c%s sdk.tar.xz) -gt 100000000 ] || exit 1
           tar -xvf sdk.tar.xz
           mv openwrt-sdk-* sdk
           echo "SDK_PATH=$(pwd)/sdk" >> $GITHUB_ENV
 
-      - name: Prepare package
+      - name: Prepare OpenWrt package
         run: |
-         PKG_DIR="${{ env.SDK_PATH }}/package/qmodem"
-         mkdir -p "$PKG_DIR"
-    
-         # 复制整个仓库内容（排除.git等目录）
-         rsync -av \
-         --exclude='.git' \
-         --exclude='.github' \
-         --exclude='sdk' \
-         "$GITHUB_WORKSPACE/" "$PKG_DIR/"
-    
-         # 检查Makefile是否存在（支持多个可能位置）
-         if [ ! -f "$PKG_DIR/Makefile" ]; then
-         echo "::warning::Checking alternative locations for Makefile"
-         # 尝试在src目录查找
-         if [ -f "$PKG_DIR/src/Makefile" ]; then
-         cp "$PKG_DIR/src/Makefile" "$PKG_DIR/"
-         # 尝试在根目录查找
-         elif [ -f "$GITHUB_WORKSPACE/Makefile" ]; then
-         cp "$GITHUB_WORKSPACE/Makefile" "$PKG_DIR/"
-         else
-         echo "::error::Makefile not found in any standard location"
-         echo "Current package contents:"
-         tree "$PKG_DIR"
-         exit 1
-         fi
-         fi
-    
-         # 最终验证
-         [ -f "$PKG_DIR/Makefile" ] || exit 1
-         echo "Makefile found at: $(realpath "$PKG_DIR/Makefile")"
+          # 创建包目录
+          PKG_DIR="${{ env.SDK_PATH }}/package/qmodem"
+          mkdir -p "$PKG_DIR"
+          
+          # 复制代码（排除无关文件）
+          rsync -av \
+            --exclude='.git' \
+            --exclude='.github' \
+            qmodem-src/application/ "$PKG_DIR/src/"
+          
+          # 创建标准OpenWrt Makefile
+          cat <<EOF > "$PKG_DIR/Makefile"
+          include \$(TOPDIR)/rules.mk
 
-      - name: Compile
-        env:
-          TERM: dumb
+          PKG_NAME:=qmodem
+          PKG_VERSION:=1.0
+          PKG_RELEASE:=1
+
+          include \$(INCLUDE_DIR)/package.mk
+
+          define Package/qmodem
+            SECTION:=utils
+            CATEGORY:=Utilities
+            TITLE:=QModem Utility
+            DEPENDS:=+libopenssl +libubus
+          endef
+
+          define Build/Compile
+            \$(MAKE) -C \$(PKG_BUILD_DIR)/src \
+              \$(TARGET_CONFIGURE_OPTS) \
+              CFLAGS="\$(TARGET_CFLAGS)"
+          endef
+
+          define Package/qmodem/install
+            \$(INSTALL_DIR) \$(1)/usr/bin
+            \$(INSTALL_BIN) \$(PKG_BUILD_DIR)/src/main \$(1)/usr/bin/qmodem
+          endef
+
+          \$(eval \$(call BuildPackage,qmodem))
+          EOF
+
+      - name: Compile package
         run: |
           cd "${{ env.SDK_PATH }}"
-          
-          # 初始化环境
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          
-          # 强制启用包
           echo "CONFIG_PACKAGE_qmodem=y" > .config
-          
-          # 编译
-          make package/qmodem/compile V=s
+          make package/qmodem/compile V=s 2>&1 | tee compile.log
 
-      - name: Upload artifacts
+      - name: Upload IPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ipk-package
-          path: "${{ env.SDK_PATH }}/bin/packages/*/*.ipk"
+          name: qmodem-ipk
+          path: |
+            ${{ env.SDK_PATH }}/bin/packages/*/base/qmodem_*.ipk
+            ${{ env.SDK_PATH }}/compile.log
