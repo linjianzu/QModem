@@ -34,9 +34,9 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           cat <<EOF > .config
-CONFIG_PACKAGE_qmodem=y
-CONFIG_PACKAGE_libopenssl=y
-EOF
+           CONFIG_PACKAGE_qmodem=y
+           CONFIG_PACKAGE_libopenssl=y
+          EOF
           
           # 强制非交互式编译
           make -j$(nproc) package/qmodem/compile V=s
