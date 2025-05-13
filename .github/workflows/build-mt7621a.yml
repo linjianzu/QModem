@@ -1,4 +1,4 @@
-name: Build QModem for MT7621a
+name: Build QModem for MT7621a (Fixed)
 
 on:
   workflow_dispatch:
@@ -6,8 +6,7 @@ on:
     branches: ["main"]
 
 env:
-  PRIMARY_URL: "https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
-  BACKUP_URL: "https://mirror.0x.si/openwrt/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+  SDK_URL: "https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
 
 jobs:
   build:
@@ -15,6 +14,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          path: "src"  # 关键修改：指定检出目录
 
       - name: Install dependencies
         run: |
@@ -23,99 +24,51 @@ jobs:
             build-essential \
             libncurses5-dev \
             zlib1g-dev \
-            wget \
-            file \
             rsync
 
-      - name: Download SDK
-        id: download_sdk
+      - name: Download and extract SDK
         run: |
-          max_retries=3
-          retry_delay=10
-          sdk_file="openwrt-sdk.tar.xz"
-          min_size=100000000
-
-          # Primary mirror attempts
-          for ((i=1; i<=$max_retries; i++)); do
-            echo "Attempt $i: Downloading from primary mirror..."
-            if wget -T 60 -O "$sdk_file" "$PRIMARY_URL"; then
-              if [ $(stat -c%s "$sdk_file") -gt $min_size ]; then
-                echo "Download successful!"
-                exit 0
-              else
-                echo "File too small, may be corrupted"
-                rm -f "$sdk_file"
-              fi
-            fi
-            sleep $retry_delay
-          done
-
-          # Fallback mirror
-          echo "Trying fallback mirror..."
-          if ! wget -T 120 -O "$sdk_file" "$BACKUP_URL"; then
-            echo "::error::All download attempts failed"
-            exit 1
-          fi
-
-          # Final verification
-          if [ $(stat -c%s "$sdk_file") -lt $min_size ]; then
-            echo "::error::Downloaded file is too small (likely incomplete)"
-            exit 1
-          fi
-
-      - name: Extract SDK
-        run: |
-          tar -xvf openwrt-sdk.tar.xz
-          SDK_DIR=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*")
-          [ -z "$SDK_DIR" ] && echo "::error::Could not find extracted SDK" && exit 1
-          mv "$SDK_DIR" sdk
+          wget -T 60 "${{ env.SDK_URL }}" -O sdk.tar.xz
+          tar -xvf sdk.tar.xz
+          mv openwrt-sdk-* sdk
           echo "SDK_PATH=$(pwd)/sdk" >> $GITHUB_ENV
 
       - name: Prepare package
         run: |
+          # 创建标准OpenWrt包结构
           PKG_DIR="${{ env.SDK_PATH }}/package/qmodem"
-          rm -rf "$PKG_DIR" || true
           mkdir -p "$PKG_DIR"
-          rsync -av \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='sdk' \
-            "$GITHUB_WORKSPACE/" "$PKG_DIR/"
-
-          # Verify essential files
+          
+          # 复制必要的文件（根据实际项目结构调整）
+          cp -r src/application "$PKG_DIR/"
+          cp src/Makefile "$PKG_DIR/"  # 确保Makefile存在
+          
+          # 验证关键文件
           [ -f "$PKG_DIR/Makefile" ] || {
-            echo "::error::Makefile is missing"
-            ls -la "$PKG_DIR"
+            echo "::error::Makefile still missing!"
+            echo "Current package contents:"
+            tree "$PKG_DIR"
             exit 1
           }
 
-      - name: Compile package
+      - name: Compile
         env:
           TERM: dumb
         run: |
           cd "${{ env.SDK_PATH }}"
           
-          # Setup environment
-          export STAGING_DIR="${{ env.SDK_PATH }}/staging_dir"
-          export PATH="$STAGING_DIR/toolchain-mipsel_24kc_gcc-11.2.0_musl/bin:$PATH"
-          
-          # Initialize feeds
+          # 初始化环境
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           
-          # Force enable package
-          cat <<EOF > .config
-          CONFIG_PACKAGE_qmodem=y
-          EOF
+          # 强制启用包
+          echo "CONFIG_PACKAGE_qmodem=y" > .config
           
-          # Compile
-          make package/qmodem/compile V=s 2>&1 | tee compile.log
-          grep -i "error" compile.log && exit 1
+          # 编译
+          make package/qmodem/compile V=s
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ipk-package
-          path: |
-            "${{ env.SDK_PATH }}/bin/packages/*/*.ipk"
-            "${{ env.SDK_PATH }}/compile.log"
+          path: "${{ env.SDK_PATH }}/bin/packages/*/*.ipk"
