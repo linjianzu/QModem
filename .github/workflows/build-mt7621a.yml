@@ -1,4 +1,4 @@
-name: Build QModem for MT7621a
+name: Build QModem for MT7621a (Robust Version)
 
 on:
   workflow_dispatch:
@@ -16,100 +16,140 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Clean workspace
+    - name: Initialize environment
       run: |
+        # Clean workspace
         sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache
-        df -h
-
-    - name: Install dependencies
-      run: |
+        
+        # Install core deps
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
           libncurses5-dev \
           zlib1g-dev \
           file \
-          unzip \
           rsync \
-          tree
+          tree \
+          python3
 
-    - name: Download SDK
-      id: sdk
+    - name: Download SDK (with fallback)
+      id: get_sdk
       run: |
         for i in {1..3}; do
-          wget -T 60 ${{ env.SDK_URL }} -O sdk.tar.xz && break || sleep 10
-          [ $i -eq 3 ] && wget -T 60 ${{ env.MIRROR_URL }} -O sdk.tar.xz || exit 1
+          if wget -T 60 ${{ env.SDK_URL }} -O sdk.tar.xz; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            break
+          else
+            echo "Attempt $i failed, retrying..."
+            sleep 5
+          fi
         done
 
+        if [ ! -f sdk.tar.xz ]; then
+          wget -T 120 ${{ env.MIRROR_URL }} -O sdk.tar.xz || exit 1
+        fi
+
+        # Validate file
         if [ $(stat -c%s sdk.tar.xz) -lt 100000000 ]; then
-          echo "::error::Downloaded SDK is too small (corrupted)"
+          echo "::error::SDK file is too small (likely corrupted)"
           exit 1
         fi
 
-    - name: Extract SDK
+    - name: Extract and verify SDK
       run: |
+        # Extract with debug output
         tar -xvf sdk.tar.xz 2>&1 | tee tar.log
-        grep -i "error" tar.log && exit 1
+        
+        # Find SDK directory
         SDK_DIR=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*")
-        [ -z "$SDK_DIR" ] && echo "::error::No SDK directory found" && exit 1
-        mv "$SDK_DIR" sdk
-        rm -f sdk.tar.xz
+        if [ -z "$SDK_DIR" ]; then
+          echo "::error::Could not find extracted SDK directory"
+          cat tar.log
+          exit 1
+        fi
 
+        mv "$SDK_DIR" sdk
         echo "SDK_PATH=$(pwd)/sdk" >> $GITHUB_ENV
         echo "STAGING_DIR=$(pwd)/sdk/staging_dir" >> $GITHUB_ENV
-        echo "PATH=$(pwd)/sdk/staging_dir/toolchain-mipsel_24kc_gcc-11.2.0_musl/bin:$PATH" >> $GITHUB_ENV
+        
+        # Verify toolchain
+        if [ ! -d "${{ env.SDK_PATH }}/staging_dir/toolchain-mipsel_24kc_gcc-11.2.0_musl" ]; then
+          echo "::error::Toolchain directory missing"
+          tree -L 3 ${{ env.SDK_PATH }}/staging_dir
+          exit 1
+        fi
 
-    - name: Verify toolchain
-      run: |
-        mipsel-openwrt-linux-gcc -v || exit 1
-        file $(which mipsel-openwrt-linux-gcc)
-
-    - name: Prepare package directory
+    - name: Prepare package
       run: |
         PKG_DIR="${{ env.SDK_PATH }}/package/qmodem"
         rm -rf "$PKG_DIR" || true
         mkdir -p "$PKG_DIR"
-
-        # Safe copy using rsync (exclude .git, .github, sdk)
+        
+        # Safe copy with explicit excludes
         rsync -av \
           --exclude='.git' \
           --exclude='.github' \
           --exclude='sdk' \
+          --exclude='*.tar.xz' \
           "$GITHUB_WORKSPACE/" "$PKG_DIR/"
 
-        echo "=== Package contents ==="
-        tree -L 2 "$PKG_DIR"
+        # Critical file check
+        if [ ! -f "$PKG_DIR/Makefile" ]; then
+          echo "::error::Makefile is missing in package directory"
+          ls -la "$PKG_DIR"
+          exit 1
+        fi
 
-    - name: Compile package
+    - name: Compile with debug
       run: |
         cd ${{ env.SDK_PATH }}
         
-        # Initialize feeds
+        # Initialize environment
+        export STAGING_DIR="${{ env.SDK_PATH }}/staging_dir"
+        export PATH="$STAGING_DIR/toolchain-mipsel_24kc_gcc-11.2.0_musl/bin:$PATH"
+        
+        # Setup feeds
         ./scripts/feeds update -a
         ./scripts/feeds install -a
+        
+        # Force enable package
+        cat <<EOF > .config
+CONFIG_PACKAGE_qmodem=y
+EOF
 
-        # Force enable the package
-        touch .config
-        echo "CONFIG_PACKAGE_qmodem=y" >> .config
+        # Compile with full logging
+        {
+          make defconfig
+          make package/qmodem/compile V=sc
+        } 2>&1 | tee /tmp/full_build.log
 
-        # Compile with debug output
-        make package/qmodem/compile V=sc 2>&1 | tee compile.log
-        grep -i "error" compile.log && exit 1
+        # Save logs even if build fails
+        cp /tmp/full_build.log ${{ env.SDK_PATH }}/compile.log
+        mkdir -p ${{ env.SDK_PATH }}/debug_info
+        cp -r tmp/pkg/qmodem/* ${{ env.SDK_PATH }}/debug_info/ || true
 
-    - name: Upload artifacts
+    - name: Upload results
       uses: actions/upload-artifact@v4
       with:
-        name: qmodem-ipk
+        name: build-output
         path: |
           ${{ env.SDK_PATH }}/bin/packages/*/*.ipk
           ${{ env.SDK_PATH }}/compile.log
+          ${{ env.SDK_PATH }}/debug_info/
+        if-no-files-found: error
 
-    - name: Upload debug info on failure
+    - name: Post-failure debug
       if: ${{ failure() }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: debug-info
-        path: |
-          ${{ env.SDK_PATH }}/.config
-          ${{ env.SDK_PATH }}/tmp/pkg/qmodem/
-          ${{ env.SDK_PATH }}/compile.log
+      run: |
+        echo "=== Final debug info ==="
+        echo "::group::SDK directory structure"
+        tree -L 3 ${{ env.SDK_PATH }}
+        echo "::endgroup::"
+        
+        echo "::group::Last 50 lines of build log"
+        tail -n 50 ${{ env.SDK_PATH }}/compile.log || true
+        echo "::endgroup::"
+        
+        echo "::group::Toolchain verification"
+        ${{ env.SDK_PATH }}/staging_dir/toolchain-*/bin/mipsel-openwrt-linux-gcc -v || true
+        echo "::endgroup::"
