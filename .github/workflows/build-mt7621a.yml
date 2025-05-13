@@ -1,21 +1,24 @@
-name: Build QModem for MT7621a (Fixed)
+name: Build QModem (Fixed Structure)
 
 on:
   workflow_dispatch:
   push:
     branches: ["main"]
 
-env:
-  SDK_URL: "https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
-
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          path: "src"  # 关键修改：指定检出目录
+      - uses: actions/checkout@v4
+
+      - name: Validate repository structure
+        run: |
+          if [ ! -f "Makefile" ] && [ ! -f "src/Makefile" ]; then
+            echo "::error::No Makefile found in root or src directory"
+            echo "Please create an OpenWrt package Makefile"
+            exit 1
+          fi
+          echo "Repository structure validated"
 
       - name: Install dependencies
         run: |
@@ -35,21 +38,36 @@ jobs:
 
       - name: Prepare package
         run: |
-          # 创建标准OpenWrt包结构
-          PKG_DIR="${{ env.SDK_PATH }}/package/qmodem"
-          mkdir -p "$PKG_DIR"
-          
-          # 复制必要的文件（根据实际项目结构调整）
-          cp -r src/application "$PKG_DIR/"
-          cp src/Makefile "$PKG_DIR/"  # 确保Makefile存在
-          
-          # 验证关键文件
-          [ -f "$PKG_DIR/Makefile" ] || {
-            echo "::error::Makefile still missing!"
-            echo "Current package contents:"
-            tree "$PKG_DIR"
-            exit 1
-          }
+         PKG_DIR="${{ env.SDK_PATH }}/package/qmodem"
+         mkdir -p "$PKG_DIR"
+    
+         # 复制整个仓库内容（排除.git等目录）
+         rsync -av \
+         --exclude='.git' \
+         --exclude='.github' \
+         --exclude='sdk' \
+         "$GITHUB_WORKSPACE/" "$PKG_DIR/"
+    
+         # 检查Makefile是否存在（支持多个可能位置）
+         if [ ! -f "$PKG_DIR/Makefile" ]; then
+         echo "::warning::Checking alternative locations for Makefile"
+         # 尝试在src目录查找
+         if [ -f "$PKG_DIR/src/Makefile" ]; then
+         cp "$PKG_DIR/src/Makefile" "$PKG_DIR/"
+         # 尝试在根目录查找
+         elif [ -f "$GITHUB_WORKSPACE/Makefile" ]; then
+         cp "$GITHUB_WORKSPACE/Makefile" "$PKG_DIR/"
+         else
+         echo "::error::Makefile not found in any standard location"
+         echo "Current package contents:"
+         tree "$PKG_DIR"
+         exit 1
+         fi
+         fi
+    
+         # 最终验证
+         [ -f "$PKG_DIR/Makefile" ] || exit 1
+         echo "Makefile found at: $(realpath "$PKG_DIR/Makefile")"
 
       - name: Compile
         env:
