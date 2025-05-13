@@ -37,11 +37,25 @@ jobs:
         mipsel-openwrt-linux-gcc -v
         mipsel-openwrt-linux-gcc -print-search-dirs
 
-    - name: Prepare package
-      run: |
-        mkdir -p ${{ env.SDK_PATH }}/package/qmodem
-        cp -r $GITHUB_WORKSPACE/* ${{ env.SDK_PATH }}/package/qmodem/
-        ls -l ${{ env.SDK_PATH }}/package/qmodem/
+- name: Prepare package
+  run: |
+    # 1. 创建目标目录
+    mkdir -p ${{ env.SDK_PATH }}/package/qmodem
+    
+    # 2. 使用find+cpio安全复制（自动排除sdk）
+    cd $GITHUB_WORKSPACE
+    find . -maxdepth 1 -not -name '.' -not -name 'sdk' -print0 | \
+      cpio -pmd0 ${{ env.SDK_PATH }}/package/qmodem/
+    
+    # 3. 验证复制结果
+    echo "=== 复制后的文件结构 ==="
+    ls -l ${{ env.SDK_PATH }}/package/qmodem/
+    
+    # 4. 必须存在的文件检查
+    [ -f "${{ env.SDK_PATH }}/package/qmodem/Makefile" ] || {
+      echo "❌ Makefile缺失！";
+      exit 1;
+    }
 
     - name: Compile with debug
       run: |
