@@ -1,69 +1,48 @@
-name: Build QModem for MT7621a
+name: Build QModem (Non-Interactive)
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [ "main" ]
-
-env:
-  SDK_URL: "https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
-  MIRROR_URL: "https://mirror.0x.si/openwrt/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Setup environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libncurses5-dev \
-            zlib1g-dev \
-            rsync \
-            tree
+          sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev
+          echo "TERM=dumb" >> $GITHUB_ENV
 
       - name: Download SDK
         run: |
-          wget -T 60 "${{ env.SDK_URL }}" -O sdk.tar.xz || \
-          wget -T 120 "${{ env.MIRROR_URL }}" -O sdk.tar.xz || exit 1
-          [ $(stat -c%s sdk.tar.xz) -gt 100000000 ] || exit 1
-
-      - name: Extract SDK
-        run: |
-          tar -xvf sdk.tar.xz
-          SDK_DIR=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*")
-          [ -z "$SDK_DIR" ] && exit 1
-          mv "$SDK_DIR" sdk
+          wget https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz
+          tar -xvf openwrt-sdk-*.tar.xz
+          mv openwrt-sdk-* sdk
           echo "SDK_PATH=$(pwd)/sdk" >> $GITHUB_ENV
 
       - name: Prepare package
         run: |
-          PKG_DIR="${{ env.SDK_PATH }}/package/qmodem"
-          rm -rf "$PKG_DIR" || true
-          mkdir -p "$PKG_DIR"
-          rsync -av \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='sdk' \
-            "$GITHUB_WORKSPACE/" "$PKG_DIR/"
+          mkdir -p "${{ env.SDK_PATH }}/package/qmodem"
+          rsync -av --exclude='sdk' "$GITHUB_WORKSPACE/" "${{ env.SDK_PATH }}/package/qmodem/"
 
       - name: Compile
         run: |
           cd "${{ env.SDK_PATH }}"
+          
+          # 非交互式配置
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          echo "CONFIG_PACKAGE_qmodem=y" > .config
-          make package/qmodem/compile V=s
+          cat <<EOF > .config
+CONFIG_PACKAGE_qmodem=y
+CONFIG_PACKAGE_libopenssl=y
+EOF
+          
+          # 强制非交互式编译
+          make -j$(nproc) package/qmodem/compile V=s
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ipk-package
-          path: |
-            "${{ env.SDK_PATH }}/bin/packages/*/*.ipk"
-            "${{ env.SDK_PATH }}/compile.log"
-          if-no-files-found: error
+          path: "${{ env.SDK_PATH }}/bin/packages/*/*.ipk"
