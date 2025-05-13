@@ -1,75 +1,37 @@
-name: Build QModem (Non-Interactive)
+- name: Download SDK (Fixed)
+  id: download_sdk
+  env:
+    PRIMARY_URL: "https://downloads.openwrt.org/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+    BACKUP_URL: "https://mirror.0x.si/openwrt/releases/22.03.3/targets/ramips/mt7621/openwrt-sdk-22.03.3-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+  run: |
+    max_retries=3
+    retry_delay=10
+    sdk_file="openwrt-sdk.tar.xz"
 
-on: [workflow_dispatch]
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup environment
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev
-          echo "TERM=dumb" >> $GITHUB_ENV
-
-      - name: Download SDK (with robust retry)
-        id: download_sdk
-        run: |
-         max_retries=3
-         retry_delay=10
-         sdk_file="openwrt-sdk-22.03.3-ramips-mt7621.tar.xz"
-
-         # 主下载源尝试
-         for ((i=1; i<=$max_retries; i++)); do
-         echo "Attempt $i: Downloading from primary mirror..."
-         if wget -T 60 -O "$sdk_file" "${{ env.SDK_URL }}"; then
-         if [ $(stat -c%s "$sdk_file") -gt 100000000 ]; then
+    # 主镜像下载尝试
+    for ((i=1; i<=$max_retries; i++)); do
+      echo "Attempt $i: Downloading from primary mirror..."
+      if wget -T 60 -O "$sdk_file" "$PRIMARY_URL"; then
+        if [ $(stat -c%s "$sdk_file") -gt 100000000 ]; then
           echo "Download successful!"
           exit 0
-         else
-          echo "File too small, may be corrupted"
-         fi
-         fi
-         sleep $retry_delay
-         done
+        else
+          echo "File size too small, may be corrupted"
+          rm -f "$sdk_file"
+        fi
+      fi
+      sleep $retry_delay
+    done
 
-          # 备用镜像尝试
-          echo "Trying fallback mirror..."
-          if ! wget -T 120 -O "$sdk_file" "${{ env.MIRROR_URL }}"; then
-          echo "::error::All download attempts failed"
-         exit 1
-         fi
+    # 备用镜像尝试
+    echo "Trying fallback mirror..."
+    if ! wget -T 120 -O "$sdk_file" "$BACKUP_URL"; then
+      echo "::error::All download attempts failed"
+      exit 1
+    fi
 
-         # 最终验证
-         if [ $(stat -c%s "$sdk_file") -lt 100000000 ]; then
-         echo "::error::Downloaded file is too small (likely incomplete)"
-         exit 1
-         fi
-
-      - name: Prepare package
-        run: |
-          mkdir -p "${{ env.SDK_PATH }}/package/qmodem"
-          rsync -av --exclude='sdk' "$GITHUB_WORKSPACE/" "${{ env.SDK_PATH }}/package/qmodem/"
-
-      - name: Compile
-        run: |
-          cd "${{ env.SDK_PATH }}"
-          
-          # 非交互式配置
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          cat <<EOF > .config
-           CONFIG_PACKAGE_qmodem=y
-           CONFIG_PACKAGE_libopenssl=y
-          EOF
-          
-          # 强制非交互式编译
-          make -j$(nproc) package/qmodem/compile V=s
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipk-package
-          path: "${{ env.SDK_PATH }}/bin/packages/*/*.ipk"
+    # 最终验证
+    if [ $(stat -c%s "$sdk_file") -lt 100000000 ]; then
+      echo "::error::Downloaded file is too small (likely incomplete)"
+      exit 1
+    fi
